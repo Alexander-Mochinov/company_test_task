@@ -2,6 +2,7 @@
 
 
 
+from ast import Try
 from statistics import mode
 from typing import Any
 from django.db import models
@@ -10,9 +11,11 @@ from django.contrib.auth.base_user import AbstractBaseUser
 from django.contrib.auth.models import PermissionsMixin, UserManager
 from django.db import models
 from django.forms import model_to_dict
-from django.db.models.signals import post_save
 from django.core.validators import RegexValidator
 import json
+from django.db.models.signals import post_save
+from django.dispatch import receiver
+
 
 class CustomErrors(Exception):
     """
@@ -25,45 +28,17 @@ class CustomErrors(Exception):
         return self.message
 
 
-SOCIAL_CONTACT = (
-    ('VK', 'VK'),
-    ('FB','Facebook'),
-    ('ОК','Оk'),
-    ('INST','Instagram'),
-    ('TEG','Telegram'),
-    ('WA','WhatsApp'),
-    ('VB', 'Viber'),
-)
-GENDER_CHOICES = (
-    ('M', 'Мужской'),
-    ('F', 'Женский'),
-    ('-', 'Не определен'),
-)
-TYPE_CHOICES = (
-    ('primary', 'Первичный'),
-    ('secondary', 'Повторный'),
-    ('external', 'Внешний'),
-    ('indirect', 'Косвенный'),
-)
-
-def set_personal_id(model: Any, self: Any, number: str) -> Any:
-    """
-    Метод для установки personal_id
-    """
-    model = model.objects.filter().last()
-    if self.id:
-        self.personal_id = int(f'{self.id}{number}')
-    else:
-        if model:
-            self.personal_id = int(f'{model.id + 1}{number}')
-        else:
-            self.personal_id = int('1' + number)
-            
 
 class CustomUser(AbstractBaseUser, PermissionsMixin):
     """
     Модель сущьности пользователя (Решил переопределить пользователя, для более гибкой логики)
     """
+
+    GENDER_CHOICES = (
+        ('M', 'Мужской'),
+        ('F', 'Женский'),
+        ('-', 'Не определен'),
+    )
     username = models.CharField(
         verbose_name = 'Пользователь',
         max_length=64,
@@ -145,7 +120,7 @@ class CustomUser(AbstractBaseUser, PermissionsMixin):
         """
         Получение гендарной пренадлежности
         """
-        return str(dict(GENDER_CHOICES)[self.gender])
+        return str(dict(CustomUser.GENDER_CHOICES)[self.gender])
 
     def to_json(self) -> json:
         return model_to_dict(self)
@@ -160,10 +135,16 @@ class Client(models.Model):
     Модель сущности клиента
     """
 
+    TYPE_CHOICES = (
+        ('primary', 'Первичный'),
+        ('secondary', 'Повторный'),
+        ('external', 'Внешний'),
+        ('indirect', 'Косвенный'),
+    )
+
     personal_id = models.PositiveIntegerField(
         verbose_name = 'Идентификационный номер клиента',
-        default=101,
-        null=False,
+        null=True,
         unique=True
     )
     phone_regex = RegexValidator(regex=r'^\+7\d{10}$')
@@ -206,11 +187,7 @@ class Client(models.Model):
         """
         Получение типа клиента
         """
-        return str(dict(TYPE_CHOICES)[self.type])
-
-    def save(self, *args, **kwargs):
-        set_personal_id(Client, self, '01')
-        super(Client, self).save(*args, **kwargs)
+        return str(dict(Client.TYPE_CHOICES)[self.type])
 
     def __str__(self) -> str:
         return f'{self.user.username} : {self.personal_id}'
@@ -251,8 +228,7 @@ class LegalEntity(models.Model):
 
     personal_id = models.PositiveIntegerField(
         verbose_name = 'Идентификационный номер Юр. лица',
-        default=102,
-        null=False,
+        null=True,
         unique=True
     )
     date_joined = models.DateTimeField(
@@ -319,11 +295,6 @@ class LegalEntity(models.Model):
     def __str__(self) -> str:
         return f'{self.full_name} : {self.personal_id}'
 
-    def save(self, *args, **kwargs):
-        set_personal_id(LegalEntity, self, '02')
-        
-        super(LegalEntity, self).save(*args, **kwargs)
-
     def to_json(self) -> json:
         return model_to_dict(self)
 
@@ -338,7 +309,7 @@ class Department(models.Model):
     """
     personal_id = models.PositiveIntegerField(
         verbose_name = 'Идентификационный номер департамента',
-        blank=True,
+        null=True,
         unique=True
     )
 
@@ -357,21 +328,37 @@ class Department(models.Model):
         """
         return self.client_departament.all().count()
 
+    def get_children(self, departament_id):
+        departament = Department.objects.get(id = departament_id)
+        child_list = []
+        child_element = True
+        while child_element:
+            departament = Department.objects.filter(parent_department = departament)
+            if departament.exists():
+                if departament.first().parent_department:
+                    child_list.append(departament.first())
+                    departament = departament.first()
+            else:
+                child_element = False
+
+        return child_list
+
     def save(self, *args, **kwargs):
         """
         Переопределяем метод для проверки на вложенность
         Устанавливаем personal_id получаем последний 
         """
-        set_personal_id(Department, self, '02')
         parent = self.parent_department
+        child_list = self.get_children(self.id)
         if parent:
-            MAX_PARENT = 1
+            PARENT_LIST = []
             while parent.parent_department:
                 parent = parent.parent_department
-                MAX_PARENT += 1
-            if MAX_PARENT < 6:
-                # raise CustomErrors('Max level parent error')
-                super(Department, self).save(*args, **kwargs)
+                PARENT_LIST.append(parent)
+
+            if not self.parent_department in [_.id for _ in child_list]:
+                if len(PARENT_LIST) < 6:
+                    super(Department, self).save(*args, **kwargs)
         else:
             super(Department, self).save(*args, **kwargs)
         
@@ -485,6 +472,16 @@ class SocialNetworks(models.Model):
     """
     Социальные сети
     """
+
+    SOCIAL_CONTACT = (
+        ('VK', 'VK'),
+        ('FB','Facebook'),
+        ('ОК','Оk'),
+        ('INST','Instagram'),
+        ('TEG','Telegram'),
+        ('WA','WhatsApp'),
+        ('VB', 'Viber'),
+    )
     name = models.CharField(
         max_length=24, 
         verbose_name="Социальная сеть", 
@@ -502,7 +499,7 @@ class SocialNetworks(models.Model):
         """
         Получение имя соц. сети
         """
-        return str(dict(SOCIAL_CONTACT)[self.name])
+        return str(dict(SocialNetworks.SOCIAL_CONTACT)[self.name])
 
     def __str__(self) -> str:
         return self.get_name()
@@ -514,3 +511,25 @@ class SocialNetworks(models.Model):
         db_table = 'social_networks'
         verbose_name = 'Социальная сеть'
         verbose_name_plural = 'Социальные сети'
+
+
+@receiver(post_save, sender=Client)
+def create_or_update_client(sender, instance, created, **kwargs):
+    if created:
+        if instance.id:
+            instance.personal_id = int(f'{instance.id}01')
+            instance.save()
+
+@receiver(post_save, sender=LegalEntity)
+def create_or_update_legal_entity(sender, instance, created, **kwargs):
+    if created:
+        if instance.id:
+            instance.personal_id = int(f'{instance.id}02')
+            instance.save()
+
+@receiver(post_save, sender=Department)
+def create_or_update_department(sender, instance, created, **kwargs):
+    if created:
+        if instance.id:
+            instance.personal_id = int(f'{instance.id}03')
+            instance.save()
