@@ -1,12 +1,8 @@
-
-
-
-
-from ast import Try
-from statistics import mode
+from collections import defaultdict
+import re
 from typing import Any
+from xml.dom.minidom import Childless
 from django.db import models
-from django.db.models import Max
 from django.contrib.auth.base_user import AbstractBaseUser
 from django.contrib.auth.models import PermissionsMixin, UserManager
 from django.db import models
@@ -318,7 +314,7 @@ class Department(models.Model):
         verbose_name="Наименование департамента",
         blank=True
     )
-    parent_department = models.ForeignKey(
+    parent = models.ForeignKey(
 		'self', on_delete=models.SET_NULL, null=True, blank=True, related_name='parent_dep', verbose_name='Родительский департамент'
 	)
 
@@ -328,37 +324,46 @@ class Department(models.Model):
         """
         return self.client_departament.all().count()
 
-    def get_children(self, departament_id):
-        departament = Department.objects.get(id = departament_id)
-        child_list = []
-        child_element = True
-        while child_element:
-            departament = Department.objects.filter(parent_department = departament)
-            if departament.exists():
-                if departament.first().parent_department:
-                    child_list.append(departament.first())
-                    departament = departament.first()
-            else:
-                child_element = False
+    def has_children(self) -> bool:
+        """
+        Проверка есть ли id в списке дочерних
+        """
+        return self.id in [_.id for _ in self.get_children(self.parent_dep.all())]
 
-        return child_list
+    def get_children(self, items) -> list:
+        """
+        Получение дочерних записей
+        """
+        department_list = []
+        if items:
+            for item in items:
+                department_list.append(item)
+                department_list.extend(self.get_children(item.parent_dep.all()))
+        return department_list
+        
+
+    def get_parent_entity(self) -> bool:
+        """
+        Получение родительских записей
+        """
+        PARENT_LIST = []
+        department = Department.objects.get(id = self.id)
+        while department.parent:
+            department = department.parent
+            PARENT_LIST.append(department)
+
+        if len(PARENT_LIST) < 6:
+            return True
+        return False
 
     def save(self, *args, **kwargs):
         """
         Переопределяем метод для проверки на вложенность
         Устанавливаем personal_id получаем последний 
         """
-        parent = self.parent_department
-        child_list = self.get_children(self.id)
-        if parent:
-            PARENT_LIST = []
-            while parent.parent_department:
-                parent = parent.parent_department
-                PARENT_LIST.append(parent)
-
-            if not self.parent_department in [_.id for _ in child_list]:
-                if len(PARENT_LIST) < 6:
-                    super(Department, self).save(*args, **kwargs)
+        if self.parent:
+            if self.get_parent_entity() and (self.get_children() == False):
+                super(Department, self).save(*args, **kwargs)
         else:
             super(Department, self).save(*args, **kwargs)
         
