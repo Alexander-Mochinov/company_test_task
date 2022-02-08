@@ -324,11 +324,11 @@ class Department(models.Model):
         """
         return self.client_departament.all().count()
 
-    def has_children(self) -> bool:
+    def has_children(self, parent_id) -> bool:
         """
         Проверка есть ли id в списке дочерних
         """
-        return self.id in [_.id for _ in self.get_children(self.parent_dep.all())]
+        return not (parent_id in [_.id for _ in self.get_children(self.parent_dep.all())])
 
     def get_children(self, items) -> list:
         """
@@ -362,7 +362,7 @@ class Department(models.Model):
         Устанавливаем personal_id получаем последний 
         """
         if self.parent:
-            if self.get_parent_entity() and (self.get_children() == False):
+            if self.get_parent_entity() and self.has_children(self.parent.id):
                 super(Department, self).save(*args, **kwargs)
         else:
             super(Department, self).save(*args, **kwargs)
